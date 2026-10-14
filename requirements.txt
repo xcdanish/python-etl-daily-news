@@ -1,0 +1,9 @@
+dagster
+dagster-webserver
+dagster_duckdb
+dagster_duckdb_pandas
+pandas
+requests
+matplotlib
+streamlit
+supervisor
