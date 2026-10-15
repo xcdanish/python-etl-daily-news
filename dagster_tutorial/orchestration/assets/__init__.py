@@ -4,14 +4,14 @@ import pandas as pd
 import requests
 from dagster import AssetExecutionContext, MetadataValue, asset, MaterializeResult
 from dagster_duckdb import DuckDBResource
-from ..resources import SqliteResource
+from ..resources import SqliteResource, PostgresResource
 
 # 1. API INGESTION ASSET
 
 
 @asset(compute_kind="HackerNews API")
-def topstories_api_ingest(context: AssetExecutionContext, duckdb: DuckDBResource) -> MaterializeResult:
-    """Hacker News API se top 100 stories fetch karke DuckDB me save karta hai."""
+def topstories_api_ingest(context: AssetExecutionContext, duckdb: DuckDBResource, postgres: PostgresResource) -> MaterializeResult:
+    """Fetches the top 100 stories from the Hacker News API and persists them to DuckDB and PostgreSQL."""
     url = "https://hacker-news.firebaseio.com/v0/topstories.json"
     top_ids = requests.get(url).json()[:100]
 
@@ -32,9 +32,39 @@ def topstories_api_ingest(context: AssetExecutionContext, duckdb: DuckDBResource
         total_num_records = conn.execute(
             "SELECT COUNT(*) FROM api_ingest").fetchone()[0]
 
+    # Also persist records into PostgreSQL for external SQL client visibility (e.g., DBeaver)
+    pg_records = 0
+    try:
+        conn = postgres.get_connection()
+        cur = conn.cursor()
+        for _, row in df.iterrows():
+            cur.execute("""
+                INSERT INTO api_ingest (id, title, by, score, time, type, url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    score = EXCLUDED.score;
+            """, (
+                int(row["id"]),
+                str(row.get("title", "")),
+                str(row.get("by", "")),
+                int(row.get("score", 0)),
+                int(row.get("time", 0)),
+                str(row.get("type", "story")),
+                str(row.get("url", ""))
+            ))
+        conn.commit()
+        cur.execute("SELECT COUNT(*) FROM api_ingest")
+        pg_records = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+    except Exception as e:
+        context.log.warning(f"PostgreSQL write warning: {e}")
+
     return MaterializeResult(
         metadata={
-            "total_num_records": total_num_records,
+            "duckdb_records": total_num_records,
+            "postgres_records": pg_records,
             "preview": MetadataValue.md(df.head().to_markdown())
         }
     )
@@ -44,7 +74,7 @@ def topstories_api_ingest(context: AssetExecutionContext, duckdb: DuckDBResource
 
 @asset(compute_kind="sqlite")
 def topstories_sqlite_ingest(context: AssetExecutionContext, sqlite: SqliteResource, duckdb: DuckDBResource) -> MaterializeResult:
-    """SQLite database se stories read karke DuckDB me load karta hai."""
+    """Reads ingested stories from the SQLite database and loads them into the DuckDB warehouse."""
     conn = sqlite.get_connection()
     df = pd.read_sql("SELECT * FROM api_ingest", con=conn)
     conn.close()
@@ -70,25 +100,40 @@ def topstories_sqlite_ingest(context: AssetExecutionContext, sqlite: SqliteResou
 
 @asset(deps=[topstories_api_ingest, topstories_sqlite_ingest], compute_kind="duckdb")
 def common_table(duckdb: DuckDBResource) -> MaterializeResult:
-    """Dono sources ko deduplicate karke common_table me merge karta hai."""
+    """Merges and deduplicates records from API and SQLite sources into a unified common_table in DuckDB."""
     with duckdb.get_connection() as conn:
+        api_exists = conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'api_ingest'"
+        ).fetchone()[0] > 0
+        sqlite_exists = conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'sqlite_ingest'"
+        ).fetchone()[0] > 0
+
+        # Create an empty counterpart table if only one source has run so far, preventing union query failures
+        if not sqlite_exists and api_exists:
+            conn.execute("CREATE TABLE sqlite_ingest AS SELECT * FROM api_ingest WHERE 1=0;")
+        elif not api_exists and sqlite_exists:
+            conn.execute("CREATE TABLE api_ingest AS SELECT * FROM sqlite_ingest WHERE 1=0;")
+
+        COLUMNS = 'id, title, "by", score, "time", "type", url, hashkey'
+
         table_exists = conn.execute(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'common_table'"
         ).fetchone()[0] > 0
 
         if not table_exists:
-            conn.execute("""
+            conn.execute(f"""
                 CREATE TABLE common_table AS
-                SELECT * FROM api_ingest
+                SELECT {COLUMNS} FROM api_ingest
                 UNION ALL
-                SELECT * FROM sqlite_ingest
+                SELECT {COLUMNS} FROM sqlite_ingest
             """)
         else:
-            conn.execute("""
+            conn.execute(f"""
                 INSERT INTO common_table
-                SELECT * FROM api_ingest WHERE hashkey NOT IN (SELECT hashkey FROM common_table)
+                SELECT {COLUMNS} FROM api_ingest WHERE hashkey NOT IN (SELECT hashkey FROM common_table)
                 UNION ALL
-                SELECT * FROM sqlite_ingest WHERE hashkey NOT IN (SELECT hashkey FROM common_table)
+                SELECT {COLUMNS} FROM sqlite_ingest WHERE hashkey NOT IN (SELECT hashkey FROM common_table)
             """)
 
         total_num_records = conn.execute(
@@ -101,7 +146,7 @@ def common_table(duckdb: DuckDBResource) -> MaterializeResult:
 
 @asset(deps=[common_table], compute_kind="duckdb")
 def most_frequent_title_words(duckdb: DuckDBResource) -> MaterializeResult:
-    """Stopwords filter karke top 25 trending title words calculate karta hai."""
+    """Filters common stopwords and computes the top 25 most frequent keywords across story titles."""
     stopwords = {"a", "the", "an", "of", "to", "in",
                  "for", "and", "with", "on", "is", "by", "at"}
 
@@ -132,7 +177,7 @@ def most_frequent_title_words(duckdb: DuckDBResource) -> MaterializeResult:
 
 @asset(deps=[most_frequent_title_words], compute_kind="signal")
 def streamlit_dashboard(context: AssetExecutionContext) -> MaterializeResult:
-    """Streamlit ko update signal bhejta hai."""
+    """Emits an update signal timestamp to notify the Streamlit dashboard that fresh data is ready."""
     signal_file = "frontend/streamlit_reload_signal.txt"
     with open(signal_file, "w") as f:
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))

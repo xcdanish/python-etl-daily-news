@@ -34,7 +34,7 @@ def load_data():
 def plot_top_words(df, container):
     if df.empty:
         container.info(
-            "Abhi data available nahi hai. Dagster me pipeline run karein!")
+            "Data is not available. Please run the pipeline in Dagster.")
         return
     fig, ax = plt.subplots(figsize=(10, 5))
     color = (random.random(), random.random(), random.random())

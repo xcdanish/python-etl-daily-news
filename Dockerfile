@@ -2,30 +2,35 @@ FROM python:3.9-slim-buster
 
 WORKDIR /app
 
-# Dependencies install karein
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Project code copy karein
+# Copy project source code and service configurations
 COPY ./dagster_tutorial /app/dagster_tutorial
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
-# Log directories setup
+# Set up directories for data and run logs
 RUN mkdir -p /app/dagster_tutorial/logs /app/dagster_tutorial/data
 
 WORKDIR /app/dagster_tutorial
 
-# Project package install karein
+# Install the orchestration package in editable mode
 RUN pip install -e .
 ENV DAGSTER_HOME=/app/dagster_tutorial
 
-# Ports expose karein
+# Expose ports: Dagster UI (3001) and Streamlit Dashboard (8502)
 EXPOSE 3001
 EXPOSE 8502
 
-# Build time par DB initialize karein
+# Seed default database schemas at build time
 RUN python docker_setup/init_sqlite.py
 RUN python docker_setup/duckdb_setup.py
 
-# Supervisor se dono services start karein
+# Entrypoint initializes databases if mounted from an empty volume
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Start Supervisord to manage Dagster webserver, daemon, and Streamlit
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

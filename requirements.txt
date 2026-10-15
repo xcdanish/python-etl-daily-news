@@ -7,3 +7,5 @@ requests
 matplotlib
 streamlit
 supervisor
+psycopg2-binary
+sqlalchemy

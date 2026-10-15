@@ -1,0 +1,58 @@
+services:
+  # 1. PostgreSQL Database Service
+  postgres-db:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hackernews_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5433:5432"   # Accessible locally at localhost:5433 (e.g., for DBeaver)
+    volumes:
+      # Named volume for persistent database storage across container restarts
+      - postgres_data:/var/lib/postgresql/data
+      # Initialization script executed on first container start to seed tables
+      - ./dagster_tutorial/docker_setup/init_postgres.sql:/docker-entrypoint-initdb.d/init_postgres.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hackernews_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  # 2. Dagster ETL + Streamlit Application Service
+  dagster-etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dagster_tutorial:latest
+    container_name: dagster_etl_pipeline
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+    ports:
+      - "3001:3001"   # Dagster Web UI & Asset Catalog
+      - "8502:8502"   # Streamlit Word Trends Dashboard
+    volumes:
+      # Live code mounts for instant updates during development
+      - ./dagster_tutorial/orchestration:/app/dagster_tutorial/orchestration
+      - ./dagster_tutorial/frontend:/app/dagster_tutorial/frontend
+      # Embedded database files: SQLite (Source) + DuckDB (Warehouse)
+      - ./dagster_tutorial/data:/app/dagster_tutorial/data
+      # Dagster metadata, logs, and daemon schedule state persistence
+      - ./dagster_tutorial/logs:/app/dagster_tutorial/logs
+    environment:
+      - DAGSTER_HOME=/app/dagster_tutorial
+      - PYTHONUNBUFFERED=1
+      - POSTGRES_HOST=postgres-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=hackernews_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgrespassword
+    restart: unless-stopped
+
+# Persistent storage volume for PostgreSQL data
+volumes:
+  postgres_data:
+    driver: local

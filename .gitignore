@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Databases & Runtime Data
+dagster_tutorial/data/*.sqlite
+dagster_tutorial/data/*.duckdb
+dagster_tutorial/data/*.db
+dagster_tutorial/logs/
+*.sqlite
+*.duckdb
+
+# Streamlit / Temporary
+dagster_tutorial/frontend/streamlit_reload_signal.txt
+.DS_Store
+.env

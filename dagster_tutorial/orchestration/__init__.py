@@ -1,6 +1,6 @@
 from dagster import Definitions, ScheduleDefinition, define_asset_job
 from dagster_duckdb import DuckDBResource
-from .resources import SqliteResource
+from .resources import SqliteResource, PostgresResource
 from .assets import (
     topstories_api_ingest,
     topstories_sqlite_ingest,
@@ -11,6 +11,7 @@ from .assets import (
 
 duckdb_resource = DuckDBResource(database="data/dagster_tutorial.duckdb")
 sqlite_resource = SqliteResource(database="data/hackernews.sqlite")
+postgres_resource = PostgresResource()
 
 api_job = define_asset_job(
     name="api_pipeline_job",
@@ -35,7 +36,11 @@ defs = Definitions(
         most_frequent_title_words,
         streamlit_dashboard,
     ],
-    resources={"duckdb": duckdb_resource, "sqlite": sqlite_resource},
+    resources={
+        "duckdb": duckdb_resource,
+        "sqlite": sqlite_resource,
+        "postgres": postgres_resource,
+    },
     jobs=[api_job, sqlite_job],
     schedules=[api_schedule, sqlite_schedule],
 )
